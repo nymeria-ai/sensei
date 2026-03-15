@@ -2,7 +2,8 @@
  * sensei run — Execute a suite against an agent
  */
 import { Command } from 'commander';
-import type { SuiteDefinition, JudgeConfig, AgentConfig, SuiteResult } from '@sensei/engine';
+import type { SuiteDefinition, JudgeConfig, AgentConfig, SuiteResult, KPIResult } from '@sensei/engine';
+import { Runner, Judge, Comparator, createAdapter, HttpAdapter, StdioAdapter, OpenClawAdapter } from '@sensei/engine';
 import { formatTerminalReport } from '../format.js';
 import { loadSuiteFile } from '../loader.js';
 import { writeOutput } from '../output.js';
@@ -60,21 +61,65 @@ export function registerRunCommand(program: Command): void {
           console.error(`[sensei] Judge: ${suite.judge?.model ?? 'none'}`);
         }
 
-        // Dynamic import of engine Runner (may not exist yet — guard gracefully)
-        let result: SuiteResult;
-        try {
-          const { Runner } = await import('@sensei/engine');
-          const runner = new Runner();
-          result = await runner.run(suite);
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes('Cannot find module') || msg.includes('is not a function')) {
-            console.error('[sensei] Engine runner not yet available. Suite parsed successfully:');
-            console.error(JSON.stringify({ id: suite.id, name: suite.name, scenarios: suite.scenarios.length }, null, 2));
-            process.exit(0);
-          }
-          throw err;
-        }
+        // Create adapter from suite config
+        const adapter = createAdapter(suite.agent);
+
+        // Create Judge if suite has judge config
+        const judge = suite.judge ? new Judge(suite.judge) : undefined;
+
+        // Create Comparator for self-improvement layer
+        const comparator = suite.judge ? new Comparator(suite.judge) : undefined;
+
+        // Build Runner with wired callbacks
+        const runner = new Runner(adapter, {
+          retries: 2,
+          timeout_ms: parseInt(opts.timeout ?? '60000', 10),
+          onScenarioComplete: verbose
+            ? (res, idx, total) => console.error(`[sensei] [${idx + 1}/${total}] ${res.scenario_name}: ${res.score.toFixed(1)}`)
+            : undefined,
+          judgeScorer: judge
+            ? async (kpi, agentOutput, scenarioInput) => {
+                const verdict = await judge.evaluate({
+                  kpi,
+                  scenarioInput: { prompt: scenarioInput },
+                  agentOutput,
+                });
+                return {
+                  kpi_id: kpi.id,
+                  kpi_name: kpi.name,
+                  score: (verdict.score / verdict.max_score) * 100,
+                  raw_score: verdict.score,
+                  max_score: verdict.max_score,
+                  weight: kpi.weight,
+                  method: kpi.method,
+                  evidence: verdict.reasoning,
+                } satisfies KPIResult;
+              }
+            : undefined,
+          comparatorScorer: comparator
+            ? async (kpi, task, feedback, originalOutput, revisedOutput) => {
+                const verdict = await comparator.compare({
+                  kpi,
+                  task,
+                  feedback,
+                  originalOutput,
+                  revisedOutput,
+                });
+                return {
+                  kpi_id: kpi.id,
+                  kpi_name: kpi.name,
+                  score: (verdict.score / verdict.max_score) * 100,
+                  raw_score: verdict.score,
+                  max_score: verdict.max_score,
+                  weight: kpi.weight,
+                  method: kpi.method,
+                  evidence: verdict.reasoning,
+                } satisfies KPIResult;
+              }
+            : undefined,
+        });
+
+        const result = await runner.run(suite);
 
         const output = format === 'json'
           ? JSON.stringify(result, null, 2)

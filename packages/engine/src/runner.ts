@@ -23,11 +23,19 @@ export interface RunnerOptions {
   timeout_ms?: number;
   /** Callback for progress updates */
   onScenarioComplete?: (result: ScenarioResult, index: number, total: number) => void;
-  /** External KPI scorer for llm-judge / comparative-judge KPIs */
+  /** External KPI scorer for llm-judge KPIs */
   judgeScorer?: (
     kpi: import('./types.js').KPIDefinition,
     agentOutput: string,
     scenarioInput: string,
+  ) => Promise<KPIResult>;
+  /** External scorer for comparative-judge KPIs (self-improvement layer) */
+  comparatorScorer?: (
+    kpi: import('./types.js').KPIDefinition,
+    task: string,
+    feedback: string,
+    originalOutput: string,
+    revisedOutput: string,
   ) => Promise<KPIResult>;
 }
 
@@ -160,6 +168,21 @@ export class Runner {
     for (const kpiDef of scenario.kpis) {
       if (kpiDef.method === 'automated') {
         kpis.push(scoreAutomatedKPI(kpiDef, output.response));
+      } else if (
+        kpiDef.method === 'comparative-judge' &&
+        this.options.comparatorScorer &&
+        scenario.depends_on
+      ) {
+        const originalOutput = outputMap.get(scenario.depends_on) ?? '';
+        kpis.push(
+          await this.options.comparatorScorer(
+            kpiDef,
+            scenario.input.prompt,
+            scenario.input.feedback ?? '',
+            originalOutput,
+            output.response,
+          ),
+        );
       } else if (this.options.judgeScorer) {
         kpis.push(await this.options.judgeScorer(kpiDef, output.response, prompt));
       } else {
