@@ -3,7 +3,9 @@
  */
 import { Command } from 'commander';
 import type { SuiteDefinition, JudgeConfig, AgentConfig, SuiteResult, KPIResult } from '@sensei/engine';
-import { Runner, Judge, Comparator, createAdapter, HttpAdapter, StdioAdapter, OpenClawAdapter } from '@sensei/engine';
+// Note: HttpAdapter, StdioAdapter, OpenClawAdapter are registered via side-effect
+// imports in the engine's index.ts — no need to import them directly here.
+import { Runner, Judge, Comparator, createAdapter } from '@sensei/engine';
 import { formatTerminalReport, formatHtmlReport } from '../format.js';
 import { loadSuiteFile } from '../loader.js';
 import { writeOutput } from '../output.js';
