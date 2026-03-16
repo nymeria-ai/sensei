@@ -18,7 +18,7 @@ Sensei is a standalone, open-source agent qualification engine. It runs test sui
 - **Language:** TypeScript (Node.js)
 - **Package manager:** npm (published as `@sensei/cli`, `@sensei/engine`, `@sensei/sdk`)
 - **Test definition:** YAML (declarative) + TypeScript SDK (programmatic)
-- **LLM Judge:** OpenAI/Anthropic/any OpenAI-compatible API
+- **LLM Judge:** OpenAI / any OpenAI-compatible API (Anthropic via proxy)
 - **Output:** JSON reports, HTML reports, terminal output
 - **CI/CD:** GitHub Actions integration
 
@@ -29,46 +29,72 @@ Sensei is a standalone, open-source agent qualification engine. It runs test sui
 The core library. No CLI, no HTTP — pure evaluation logic.
 
 ```
-engine/
-├── runner.ts          # Orchestrates test execution
-├── scorer.ts          # Calculates scores from KPI results
-├── judge.ts           # LLM-as-judge evaluation
-├── comparator.ts      # Comparative evaluation (before/after)
-├── reporter.ts        # Generates reports (JSON, HTML, terminal)
-├── loader.ts          # Loads suite definitions (YAML/TS)
-├── adapters/          # Agent communication adapters
-│   ├── types.ts       # Adapter interface
-│   ├── http.ts        # HTTP POST adapter
-│   ├── openclaw.ts    # OpenClaw native adapter
-│   ├── stdio.ts       # Stdin/stdout adapter
-│   └── langchain.ts   # LangChain adapter
-└── types.ts           # Core type definitions
+engine/src/
+├── types.ts          # Core type definitions + constants (LAYER_WEIGHTS, BADGE_THRESHOLDS)
+├── schema.ts         # Zod validation schemas for suite definitions
+├── loader.ts         # Loads suite definitions (YAML) + resolves fixture files
+├── runner.ts         # Orchestrates test execution (connect → health check → run → disconnect)
+├── scorer.ts         # Calculates scores from KPI results (automated scoring)
+├── judge.ts          # LLM-as-judge evaluation (single + multi-judge median)
+├── comparator.ts     # Comparative evaluation (before/after for self-improvement)
+├── reporter.ts       # Generates reports (JSON + ANSI terminal)
+├── llm-client.ts     # Shared OpenAI-compatible client factory
+└── adapters/
+    ├── types.ts      # Adapter interface + registry + factory
+    ├── http.ts       # HTTP POST adapter (with retry)
+    ├── stdio.ts      # Stdin/stdout JSON-line adapter
+    └── openclaw.ts   # OpenClaw native adapter
 ```
 
 #### Runner Flow
 
 ```
-1. Load suite definition (YAML or TS)
-2. Initialize adapter (connect to agent)
-3. Health check agent
-4. For each scenario (ordered by layer):
-   a. Layer 1 (execution): Send task → collect output → score KPIs
-   b. Layer 2 (reasoning): Send questions about previous output → score reasoning
-   c. Layer 3 (self-improvement): Send feedback → re-run task → compare with original
-5. Aggregate scores
-6. Generate report
-7. Return results
+1. Load suite definition (YAML or JSON, validated via Zod)
+2. Validate depends_on references (throws on unresolved)
+3. Initialize adapter (connect to agent)
+4. Health check agent
+5. For each scenario (ordered by layer: execution → reasoning → self-improvement):
+   a. Build prompt (inject depends_on output + feedback if present)
+   b. Send to agent via adapter
+   c. Score KPIs (automated or via judge/comparator callbacks)
+   d. Calculate weighted scenario score
+6. Disconnect adapter (always, via try/finally)
+7. Aggregate layer scores and overall score
+8. Determine badge
+9. Return SuiteResult
 ```
 
-#### Scoring Model
+#### Core Types
 
 ```typescript
+interface AgentAdapter {
+  name: string;
+  connect(): Promise<void>;
+  healthCheck(): Promise<boolean>;
+  send(input: AdapterInput): Promise<AdapterOutput>;
+  disconnect(): Promise<void>;
+}
+
+interface AdapterInput {
+  prompt: string;
+  context?: Record<string, unknown>;
+  timeout_ms?: number;
+}
+
+interface AdapterOutput {
+  response: string;
+  duration_ms: number;
+  metadata?: Record<string, unknown>;
+  error?: string;
+}
+
 interface KPIResult {
   kpi_id: string;
+  kpi_name: string;
   score: number;          // 0-100 normalized
   raw_score: number;      // Raw value (e.g., 4.5/5)
   max_score: number;      // Maximum possible
-  weight: number;         // Weight in scenario score
+  weight: number;         // Weight in scenario score (0-1)
   method: 'automated' | 'llm-judge' | 'comparative-judge';
   evidence: string;       // Explanation of score
   metadata?: Record<string, unknown>;
@@ -76,11 +102,14 @@ interface KPIResult {
 
 interface ScenarioResult {
   scenario_id: string;
+  scenario_name: string;
   layer: 'execution' | 'reasoning' | 'self-improvement';
   score: number;          // Weighted average of KPIs (0-100)
   kpis: KPIResult[];
   duration_ms: number;
+  agent_input: string;    // What was sent to the agent
   agent_output: string;   // What the agent produced
+  error?: string;
 }
 
 interface SuiteResult {
@@ -97,7 +126,7 @@ interface SuiteResult {
   scenarios: ScenarioResult[];
   badge: 'none' | 'bronze' | 'silver' | 'gold';
   duration_ms: number;
-  judge_model: string;    // Which LLM was used as judge
+  judge_model?: string;
 }
 ```
 
@@ -109,6 +138,7 @@ Scenario Score = Σ(kpi.score × kpi.weight) / Σ(kpi.weight)
 Layer Score = average(scenarios in layer)
 
 Overall Score = execution × 0.50 + reasoning × 0.30 + self_improvement × 0.20
+  (missing layers are excluded and remaining weights re-normalized)
 
 Badge:
   gold   >= 90
@@ -123,481 +153,328 @@ For KPIs that can't be measured automatically (e.g., "Is this email personalized
 
 ```typescript
 interface JudgeConfig {
-  model: string;              // e.g., "gpt-4o", "claude-sonnet"
   provider: 'openai' | 'anthropic' | 'openai-compatible';
-  api_key?: string;           // Falls back to env vars
-  base_url?: string;          // For custom endpoints
-  temperature: number;        // Default 0.0 for consistency
-  max_retries: number;        // Default 3
-}
-
-interface JudgePrompt {
-  system: string;             // Judge persona & instructions
-  rubric: string;             // Scoring rubric (from KPI definition)
-  task_description: string;   // What the agent was asked to do
-  agent_output: string;       // What the agent produced
-  input_context?: string;     // Original input/scenario context
+  model: string;              // e.g., "gpt-4o"
+  api_key?: string;           // Falls back to env vars (OPENAI_API_KEY / ANTHROPIC_API_KEY)
+  base_url?: string;          // For custom endpoints / proxy
+  temperature?: number;       // Default 0.0 for consistency
+  max_retries?: number;       // Default 3
+  multi_judge?: boolean;      // Use 3 judges, take median
 }
 
 interface JudgeVerdict {
-  score: number;              // Numeric score per rubric
+  score: number;
   max_score: number;
-  reasoning: string;          // Judge's explanation
-  confidence: number;         // 0-1, how confident the judge is
+  reasoning: string;
+  confidence: number;         // 0-1
 }
 ```
 
-**Judge prompt template:**
+**Judge prompt structure:**
+- System: "You are an expert evaluator. Respond with JSON only."
+- User: KPI name + rubric + task + input context + agent output + instructions
+- Response: `{ score, max_score, reasoning, confidence }`
+
+**Multi-judge:** Runs 3 judges in parallel (with concurrency limit), takes median score. Best verdict (closest to median) provides the reasoning.
+
+**Per-call timeout:** 60 seconds via AbortController. NaN scores are rejected.
+
+### 3. Comparator (`comparator.ts`)
+
+For self-improvement layer KPIs. Compares original output with revised output after feedback.
+
+Supports three comparison types:
+- `improvement` — Did the agent meaningfully address the feedback?
+- `consistency` — Did the agent maintain strengths while improving?
+- `adaptation` — Did the agent adapt its approach appropriately?
+
+Uses the same LLM client as Judge. NaN scores are validated and rejected.
+
+### 4. Automated Scorer (`scorer.ts`)
+
+Deterministic scoring without LLM:
+
+| Type | Description |
+|------|-------------|
+| `contains` | Output includes expected string |
+| `regex` | Output matches regex pattern (with ReDoS protection) |
+| `json-schema` | Output validates against JSON Schema (Ajv) |
+| `json-parse` | Output is valid JSON |
+| `numeric-range` | Output parses to number within `{ min, max }` |
+| `word-count` | Output word count within `{ min, max }` (with optional tolerance) |
+| `function` | Custom scoring function registered via SDK `registerKPI()` |
+
+### 5. Adapters
+
+#### HTTP Adapter (`adapters/http.ts`)
+
 ```
-You are an expert evaluator for AI agent qualification tests.
-
-Your task: Score the agent's output on the following KPI.
-
-## KPI: {kpi.name}
-{kpi.description}
-
-## Rubric
-{kpi.rubric}
-
-## Task Given to Agent
-{scenario.task}
-
-## Input Context
-{scenario.input}
-
-## Agent's Output
-{agent_output}
-
-## Instructions
-1. Evaluate the output against the rubric
-2. Provide a numeric score
-3. Explain your reasoning in 2-3 sentences
-4. Rate your confidence (0.0-1.0)
-
-Respond in JSON:
-{
-  "score": <number>,
-  "max_score": <number>,
-  "reasoning": "<string>",
-  "confidence": <number>
-}
+POST <endpoint>
+Body: { task: "<prompt>", context: { ... } }
+Response: { response: "<output>", structured: { ... } }
 ```
 
-**Multi-judge option:** For high-stakes evaluations, run 3 judges and take the median score.
+Features: Configurable timeout, retry on failure, custom headers.
 
-### 3. Adapters
+#### Stdio Adapter (`adapters/stdio.ts`)
+
+Spawns a child process. Communicates via JSON lines on stdin/stdout.
+
+```
+→ stdin:  { "task": "...", "context": { ... } }\n
+← stdout: { "response": "...", "structured": { ... } }\n
+```
+
+Features: Class-level buffer, child process exit handler, sequential request handling.
+
+#### OpenClaw Adapter (`adapters/openclaw.ts`)
+
+Native integration with OpenClaw agents via session key.
+
+### 6. CLI (`@sensei/cli`)
+
+```
+sensei run [options]
+  --suite <path>           Path to suite YAML or JSON file (required)
+  --target <url>           Agent endpoint URL or command (overrides suite agent config)
+  --adapter <type>         Adapter type: http, stdio, openclaw (default: http)
+  --judge-model <model>    LLM judge model (default: gpt-4o)
+  --timeout <ms>           Per-scenario timeout in ms (default: 60000)
+  --verbose                Show detailed execution logs
+  --format <format>        Output format: json, html, terminal (default: terminal)
+  --output <path>          Write report to file
+
+sensei validate <path>     Validate a suite YAML/JSON file against Zod schema
+sensei init [name]         Generate a new suite template (interactive or --non-interactive)
+sensei report              Render a report from a previous JSON result
+  --input <path>           Path to JSON result file
+```
+
+### 7. SDK (`@sensei/sdk`)
+
+Programmatic suite building and utilities.
 
 ```typescript
-interface SenseiAdapter {
-  /** Unique adapter identifier */
-  id: string;
+// Fluent builder
+const suite = new SuiteBuilder()
+  .id('my-eval').name('My Eval').version('1.0.0')
+  .agent({ adapter: 'http', endpoint: 'http://localhost:3000' })
+  .judge({ provider: 'openai', model: 'gpt-4o' })
+  .addScenario(scenario('task-1', { layer: 'execution', input: { prompt: '...' }, kpis: [...] }))
+  .build();  // Validates and returns SuiteDefinition
 
-  /** Initialize connection to agent */
-  connect(config: AdapterConfig): Promise<void>;
+// Custom KPI functions
+registerKPI({ id: 'my-kpi', name: 'My KPI', maxScore: 100, fn: (output) => scoreIt(output) });
+const { score, maxScore } = await invokeKPI('my-kpi', agentOutput);
 
-  /** Check if agent is reachable and ready */
-  healthCheck(): Promise<{ ok: boolean; latency_ms: number }>;
-
-  /** Send a task and get structured output */
-  execute(input: ExecuteInput): Promise<ExecuteOutput>;
-
-  /** Send a conversational message (for reasoning layer) */
-  converse(message: string, context?: ConversationContext): Promise<string>;
-
-  /** Disconnect/cleanup */
-  disconnect(): Promise<void>;
-}
-
-interface ExecuteInput {
-  task: string;                    // What to do
-  context?: Record<string, any>;   // Additional context/data
-  files?: FileAttachment[];        // Files to provide
-  timeout_ms?: number;             // Max execution time
-}
-
-interface ExecuteOutput {
-  response: string;                // Agent's primary output
-  structured?: Record<string, any>; // Structured data if available
-  duration_ms: number;             // How long the agent took
-  tokens_used?: number;            // Token consumption if available
-  metadata?: Record<string, any>;  // Any additional metadata
-}
+// Result utilities
+const comparison = compareResults(beforeResult, afterResult);  // Delta analysis
+const summary = formatSummary(result);  // One-line summary
+const executionScenarios = filterByLayer(result, 'execution');
 ```
 
-#### HTTP Adapter
+## Suite Definition Format
 
-The simplest adapter. POST to an endpoint, get JSON back.
-
-```typescript
-// Agent endpoint contract:
-// POST /execute
-// Body: { task: string, context?: object }
-// Response: { response: string, structured?: object }
-
-// POST /converse
-// Body: { message: string, context?: { history: Message[] } }
-// Response: { response: string }
-```
-
-#### OpenClaw Adapter
-
-Native integration with OpenClaw agents. Uses the OpenClaw CLI or API.
-
-```typescript
-// Uses: openclaw agent --message "..." --session-id "sensei-{suite}-{run}" --json
-// Or: OpenClaw API endpoint
-```
-
-#### Stdio Adapter
-
-For CLI-based agents. Send task via stdin, read response from stdout.
-
-```typescript
-// spawn agent process
-// write JSON to stdin: { task: "...", context: {...} }
-// read JSON from stdout: { response: "...", structured: {...} }
-```
-
-### 4. Suite Definition Format
-
-Suites can be defined in YAML (declarative) or TypeScript (programmatic).
-
-#### YAML Format
+Suites are defined in YAML (declarative) or built programmatically via the SDK.
 
 ```yaml
-id: sdr
-version: 1.0.0
+id: sdr-qualification
+version: "1.0.0"
 name: "Sales Development Representative"
 description: "Evaluate SDR capabilities"
-author: "Sensei Community"
-tags: ["sales", "outbound", "email", "calling"]
 
-# Default timeouts
+agent:
+  adapter: http
+  endpoint: http://localhost:3000
+  timeout_ms: 60000
+
+judge:
+  provider: openai
+  model: gpt-4o
+  temperature: 0.0
+
 defaults:
   timeout_ms: 60000
-  judge_model: "gpt-4o"
-
-# Fixtures directory (relative to suite root)
-fixtures: ./fixtures
+  judge_model: gpt-4o
 
 scenarios:
   - id: cold-email
     name: "Cold Email Outreach"
     layer: execution
-    timeout_ms: 30000
     input:
-      # Can be inline or reference a fixture file
-      prospect: !file fixtures/prospects/sarah-chen.yaml
-      product: !file fixtures/products/agentops.yaml
-    task: |
-      Write a personalized cold email to this prospect.
-      Include a compelling subject line.
-    expected_format: |
-      Subject: <subject line>
-
-      <email body>
+      prompt: |
+        Write a personalized cold email to this prospect.
+      context:
+        prospect: { name: "Sarah Chen", title: "VP Engineering", company: "TechCorp" }
+      fixtures:
+        transcript: transcripts/discovery-call.yaml
     kpis:
       - id: personalization
         name: "Personalization"
-        scoring: llm-judge
-        rubric: |
-          5: References 3+ specific prospect details naturally
-          4: References 2 specific details
-          3: References 1 specific detail
-          2: Generic with name
-          1: Fully generic
         weight: 0.3
-      # ... more KPIs
+        method: llm-judge
+        config:
+          rubric: |
+            5: References 3+ specific prospect details naturally
+            3: References 1 specific detail
+            1: Fully generic
+          max_score: 5
+      - id: brevity
+        name: "Email Length"
+        weight: 0.2
+        method: automated
+        config:
+          type: word-count
+          expected: { min: 80, max: 200 }
+
+  - id: explain-strategy
+    name: "Explain Strategy"
+    layer: reasoning
+    depends_on: cold-email
+    input:
+      prompt: "Explain your approach to the cold email."
+    kpis:
+      - id: depth
+        name: "Reasoning Depth"
+        weight: 1.0
+        method: llm-judge
+        config:
+          max_score: 5
+
+  - id: improve-email
+    name: "Improve After Feedback"
+    layer: self-improvement
+    depends_on: cold-email
+    input:
+      prompt: "Rewrite the email incorporating this feedback."
+      feedback: "Too feature-focused. Lead with pain, soften the CTA."
+    kpis:
+      - id: improvement
+        name: "Improvement Quality"
+        weight: 1.0
+        method: comparative-judge
+        config:
+          comparison_type: improvement
 ```
-
-#### TypeScript SDK Format
-
-```typescript
-import { defineSuite, scenario, kpi, fixtures } from '@sensei/sdk';
-
-const prospects = fixtures.load<Prospect[]>('./fixtures/prospects.json');
-
-export default defineSuite({
-  id: 'sdr',
-  version: '1.0.0',
-  name: 'Sales Development Representative',
-
-  scenarios: [
-    scenario('cold-email', {
-      layer: 'execution',
-      input: { prospect: prospects[0], product: agentOps },
-      task: 'Write a personalized cold email...',
-      kpis: [
-        kpi('personalization', {
-          scoring: 'llm-judge',
-          rubric: '5: References 3+ details...',
-          weight: 0.3,
-        }),
-      ],
-    }),
-  ],
-});
-```
-
-### 5. CLI (`@sensei/cli`)
-
-```
-sensei test [options]
-  --suite <name>           Suite to run (e.g., sdr, support, qa)
-  --scenario <id>          Run specific scenario only
-  --agent <url|path>       Agent endpoint or command
-  --adapter <type>         Adapter type (http, openclaw, stdio, langchain)
-  --judge-model <model>    LLM judge model (default: gpt-4o)
-  --judge-provider <name>  Judge provider (openai, anthropic)
-  --timeout <ms>           Global timeout per scenario
-  --output <format>        Output format (json, html, terminal)
-  --output-file <path>     Write report to file
-  --multi-judge            Use 3 judges and take median
-  --verbose                Show detailed execution logs
-  --dry-run                Parse suite without running
-
-sensei list                List available suites
-sensei info <suite>        Show suite details & scenarios
-sensei validate <path>     Validate a custom suite definition
-sensei init <name>         Scaffold a new custom suite
-sensei serve               Start HTTP API server for remote execution
-```
-
-### 6. API Server (optional)
-
-For integration with WorkDraft or other platforms.
-
-```
-POST /api/v1/evaluate
-  Body: {
-    suite: "sdr",
-    agent: { type: "http", url: "https://..." },
-    options: { judge_model: "gpt-4o", multi_judge: true }
-  }
-  Response: SuiteResult (streamed or polled)
-
-GET  /api/v1/suites             List suites
-GET  /api/v1/suites/:id         Suite details
-GET  /api/v1/results/:id        Get evaluation result
-GET  /api/v1/results/:id/report Report (HTML/PDF)
-```
-
-## Test Suites — Initial Set
-
-### Suite 1: SDR (Sales Development Representative)
-**Scenarios:**
-| ID | Layer | Description |
-|----|-------|-------------|
-| cold-email-personalization | execution | Write personalized cold email |
-| email-sequence | execution | Design 3-touch email sequence |
-| call-transcript-analysis | execution | Analyze SDR call recording |
-| linkedin-outreach | execution | Write LinkedIn connection request + message |
-| lead-qualification | execution | Qualify a lead using BANT/MEDDIC |
-| explain-strategy | reasoning | Explain outreach strategy choices |
-| handle-objection-reasoning | reasoning | Explain how to handle "we already have a solution" |
-| improve-after-feedback | self-improvement | Rewrite email after feedback |
-| adjust-qualification | self-improvement | Re-qualify lead after criteria change |
-
-### Suite 2: Customer Support
-**Scenarios:**
-| ID | Layer | Description |
-|----|-------|-------------|
-| ticket-resolution | execution | Resolve a customer support ticket |
-| escalation-decision | execution | Decide whether to escalate or resolve |
-| multi-turn-support | execution | Handle a 5-turn support conversation |
-| tone-adaptation | execution | Adapt tone for angry vs. confused customer |
-| knowledge-base-answer | execution | Answer from provided KB articles |
-| explain-resolution | reasoning | Explain why this resolution was chosen |
-| empathy-reasoning | reasoning | Explain approach to emotional customer |
-| improve-after-csat | self-improvement | Improve response after low CSAT feedback |
-
-### Suite 3: Content Writer
-**Scenarios:**
-| ID | Layer | Description |
-|----|-------|-------------|
-| blog-post | execution | Write 800-word blog post from brief |
-| social-media-set | execution | Create week of social posts |
-| email-newsletter | execution | Write monthly newsletter |
-| seo-optimization | execution | Optimize existing content for SEO |
-| brand-voice-match | execution | Match a specific brand voice from examples |
-| content-strategy | reasoning | Explain content calendar decisions |
-| audience-reasoning | reasoning | Explain audience targeting choices |
-| improve-after-edit | self-improvement | Revise content after editorial feedback |
-
-### Suite 4: QA Engineer
-**Scenarios:**
-| ID | Layer | Description |
-|----|-------|-------------|
-| test-plan-creation | execution | Create test plan for a feature spec |
-| bug-report-writing | execution | Write bug report from reproduction steps |
-| api-test-generation | execution | Generate API test cases from spec |
-| regression-analysis | execution | Analyze test results and identify regressions |
-| edge-case-discovery | execution | Find edge cases in a feature description |
-| test-strategy | reasoning | Explain testing strategy and priorities |
-| risk-assessment | reasoning | Explain where to focus testing effort |
-| improve-coverage | self-improvement | Expand test plan after coverage feedback |
-
-### Suite 5: Data Analyst
-**Scenarios:**
-| ID | Layer | Description |
-|----|-------|-------------|
-| data-exploration | execution | Explore dataset and summarize findings |
-| sql-query-writing | execution | Write SQL queries for business questions |
-| anomaly-detection | execution | Find anomalies in time-series data |
-| dashboard-design | execution | Design KPI dashboard layout |
-| insight-generation | execution | Generate actionable insights from data |
-| methodology-explanation | reasoning | Explain analytical approach |
-| correlation-reasoning | reasoning | Explain correlation vs causation in findings |
-| improve-analysis | self-improvement | Refine analysis after stakeholder feedback |
-
-### Suite 6: Developer
-**Scenarios:**
-| ID | Layer | Description |
-|----|-------|-------------|
-| code-generation | execution | Implement function from specification |
-| code-review | execution | Review PR and provide feedback |
-| bug-fix | execution | Debug and fix a failing test |
-| api-design | execution | Design REST API from requirements |
-| refactoring | execution | Refactor legacy code to modern patterns |
-| architecture-reasoning | reasoning | Explain architectural decisions |
-| tradeoff-analysis | reasoning | Explain performance vs. readability tradeoffs |
-| improve-after-review | self-improvement | Update code after code review comments |
 
 ## WorkDraft Integration
 
 WorkDraft uses Sensei as a library dependency:
 
 ```typescript
-import { SenseiEngine, HttpAdapter } from '@sensei/engine';
+import { SuiteLoader, Runner, Judge, Comparator, createAdapter } from '@sensei/engine';
+import type { KPIResult } from '@sensei/engine';
 
-// When agent applies to a job
-async function evaluateCandidate(agentUrl: string, jobRoleType: string) {
-  const engine = new SenseiEngine({
-    judge: { model: 'gpt-4o', provider: 'openai' },
+async function evaluateCandidate(agentUrl: string, suiteFile: string) {
+  // Load the suite
+  const loader = new SuiteLoader();
+  const suite = await loader.loadFile(suiteFile);
+
+  // Override agent endpoint
+  suite.agent = { adapter: 'http', endpoint: agentUrl, timeout_ms: 60000 };
+
+  // Create components
+  const adapter = createAdapter(suite.agent);
+  const judge = suite.judge ? new Judge(suite.judge) : undefined;
+  const comparator = suite.judge ? new Comparator(suite.judge) : undefined;
+
+  // Build runner with scoring callbacks
+  const runner = new Runner(adapter, {
+    retries: 2,
+    judgeScorer: judge ? async (kpi, agentOutput, scenarioInput) => {
+      const verdict = await judge.evaluate({ kpi, scenarioInput: { prompt: scenarioInput }, agentOutput });
+      return {
+        kpi_id: kpi.id, kpi_name: kpi.name,
+        score: (verdict.score / verdict.max_score) * 100,
+        raw_score: verdict.score, max_score: verdict.max_score,
+        weight: kpi.weight, method: kpi.method, evidence: verdict.reasoning,
+      } satisfies KPIResult;
+    } : undefined,
+    comparatorScorer: comparator ? async (kpi, task, feedback, orig, revised) => {
+      const verdict = await comparator.compare({ kpi, task, feedback, originalOutput: orig, revisedOutput: revised });
+      return {
+        kpi_id: kpi.id, kpi_name: kpi.name,
+        score: (verdict.score / verdict.max_score) * 100,
+        raw_score: verdict.score, max_score: verdict.max_score,
+        weight: kpi.weight, method: kpi.method, evidence: verdict.reasoning,
+      } satisfies KPIResult;
+    } : undefined,
   });
 
-  const adapter = new HttpAdapter({ url: agentUrl });
-  const result = await engine.run({
-    suite: jobRoleType, // e.g., 'sdr'
-    adapter,
-    options: { multiJudge: true },
-  });
+  const result = await runner.run(suite);
 
-  // Store result in WorkDraft DB
+  // Store in WorkDraft DB
   await saveEvaluationResult(result);
+
+  if (result.scores.overall < 60) {
+    await rejectApplication(result);
+  } else {
+    await queueForReview(result);
+  }
 
   return result;
 }
 ```
-
-## Development Plan
-
-### Phase 1: Foundation (Week 1)
-- [ ] Project setup (TypeScript, npm workspaces, ESLint, tests)
-- [ ] Core types and interfaces
-- [ ] Suite loader (YAML parser)
-- [ ] HTTP adapter
-- [ ] LLM judge (OpenAI)
-- [ ] Scorer (automated + judge-based)
-- [ ] Basic CLI (`sensei test`, `sensei list`)
-- [ ] JSON reporter
-- [ ] SDR suite (3 scenarios: cold-email, call-analysis, explain-strategy)
-
-### Phase 2: Expand (Week 2)
-- [ ] Remaining SDR scenarios
-- [ ] Customer Support suite
-- [ ] Content Writer suite
-- [ ] OpenClaw adapter
-- [ ] Stdio adapter
-- [ ] HTML reporter
-- [ ] Terminal reporter (pretty output)
-- [ ] Multi-judge support
-- [ ] Comparative judge (before/after)
-- [ ] `sensei init` scaffolding
-
-### Phase 3: Polish (Week 3)
-- [ ] QA Engineer suite
-- [ ] Data Analyst suite
-- [ ] Developer suite
-- [ ] API server
-- [ ] GitHub Actions integration
-- [ ] Badge system
-- [ ] Documentation site
-- [ ] npm publish
-
-### Phase 4: Community (Ongoing)
-- [ ] Community suite contributions
-- [ ] Suite marketplace
-- [ ] WorkDraft deep integration
-- [ ] Leaderboard
-- [ ] Certificate system
 
 ## File Structure
 
 ```
 sensei/
 ├── packages/
-│   ├── engine/                # @sensei/engine
+│   ├── engine/                  # @sensei/engine
 │   │   ├── src/
-│   │   │   ├── runner.ts
-│   │   │   ├── scorer.ts
-│   │   │   ├── judge.ts
-│   │   │   ├── comparator.ts
-│   │   │   ├── reporter/
-│   │   │   │   ├── json.ts
-│   │   │   │   ├── html.ts
-│   │   │   │   └── terminal.ts
-│   │   │   ├── loader.ts
-│   │   │   ├── adapters/
-│   │   │   │   ├── http.ts
-│   │   │   │   ├── openclaw.ts
-│   │   │   │   ├── stdio.ts
-│   │   │   │   └── langchain.ts
-│   │   │   └── types.ts
+│   │   │   ├── types.ts         # Core types + LAYER_WEIGHTS + BADGE_THRESHOLDS
+│   │   │   ├── schema.ts        # Zod schemas (SuiteDefinitionSchema, etc.)
+│   │   │   ├── loader.ts        # YAML parser + fixture resolver
+│   │   │   ├── runner.ts        # Scenario execution orchestrator
+│   │   │   ├── scorer.ts        # Automated KPI scoring + aggregation
+│   │   │   ├── judge.ts         # LLM-as-judge (single + multi-judge)
+│   │   │   ├── comparator.ts    # Before/after comparative judge
+│   │   │   ├── reporter.ts      # JSON + terminal reporter
+│   │   │   ├── llm-client.ts    # OpenAI-compatible client factory
+│   │   │   └── adapters/
+│   │   │       ├── types.ts     # Adapter registry + createAdapter()
+│   │   │       ├── http.ts      # HTTP POST adapter
+│   │   │       ├── stdio.ts     # Stdin/stdout JSON-line adapter
+│   │   │       └── openclaw.ts  # OpenClaw native adapter
+│   │   ├── tests/               # 100+ engine tests
 │   │   ├── package.json
 │   │   └── tsconfig.json
-│   ├── cli/                   # @sensei/cli
+│   ├── cli/                     # @sensei/cli
 │   │   ├── src/
-│   │   │   ├── index.ts
+│   │   │   ├── index.ts         # Entry point (commander)
+│   │   │   ├── loader.ts        # Suite loader (YAML + JSON with Zod validation)
+│   │   │   ├── format.ts        # Terminal + HTML report wrappers
+│   │   │   ├── html-report.ts   # Self-contained dark-theme HTML
+│   │   │   ├── output.ts        # File output helper
 │   │   │   └── commands/
-│   │   │       ├── test.ts
-│   │   │       ├── list.ts
-│   │   │       ├── info.ts
-│   │   │       ├── init.ts
-│   │   │       └── serve.ts
+│   │   │       ├── run.ts       # sensei run
+│   │   │       ├── validate.ts  # sensei validate
+│   │   │       ├── init.ts      # sensei init
+│   │   │       └── report.ts    # sensei report
+│   │   ├── tests/               # CLI + E2E tests
 │   │   └── package.json
-│   └── sdk/                   # @sensei/sdk
+│   └── sdk/                     # @sensei/sdk
 │       ├── src/
-│       │   ├── index.ts
-│       │   ├── define.ts
-│       │   └── fixtures.ts
+│       │   ├── index.ts         # Public API exports
+│       │   ├── builder.ts       # SuiteBuilder + scenario() + kpi() helpers
+│       │   ├── custom-kpi.ts    # Custom KPI registry + invokeKPI()
+│       │   └── result-utils.ts  # filterByLayer, compareResults, formatSummary
+│       ├── tests/               # SDK tests
 │       └── package.json
 ├── suites/
-│   ├── sdr/
-│   │   ├── suite.yaml
-│   │   └── fixtures/
-│   │       ├── prospects/
-│   │       ├── products/
-│   │       └── transcripts/
-│   ├── support/
-│   │   ├── suite.yaml
-│   │   └── fixtures/
-│   ├── content-writer/
-│   │   ├── suite.yaml
-│   │   └── fixtures/
-│   ├── qa-engineer/
-│   │   ├── suite.yaml
-│   │   └── fixtures/
-│   ├── data-analyst/
-│   │   ├── suite.yaml
-│   │   └── fixtures/
-│   └── developer/
-│       ├── suite.yaml
+│   └── sdr-qualification/
+│       ├── suite.yaml           # SDR test suite definition
 │       └── fixtures/
+│           ├── prospects/       # Sample prospect data
+│           ├── products/        # Sample product data
+│           └── transcripts/     # Sample call transcripts
 ├── README.md
 ├── ARCHITECTURE.md
 ├── CONTRIBUTING.md
+├── CHANGELOG.md
 ├── LICENSE
-├── package.json               # Workspace root
-└── tsconfig.json
+├── package.json                 # Workspace root
+├── tsconfig.base.json
+└── vitest.config.ts
 ```

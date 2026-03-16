@@ -1,32 +1,35 @@
 # Sensei Evaluation Flow
 
-## How it works: Agent applies → Sensei evaluates → Score returns
+## How it works: Load Suite → Connect Agent → Evaluate → Score → Badge
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        WORKDRAFT (or any platform)                  │
+│                    CALLER (WorkDraft, CI/CD, or CLI)                │
 │                                                                     │
-│  1. Agent applies to job "SDR Role at TechCorp"                    │
-│     └─ agent_url: https://agent.example.com/api                    │
-│     └─ job_role: "sdr"                                             │
+│  1. Load suite YAML:                                               │
+│     const suite = await loader.loadFile('./suites/sdr-qualification/suite.yaml')  │
 │                                                                     │
-│  2. WorkDraft calls Sensei:                                        │
-│     sensei.evaluate({ suite: "sdr", agent: agent_url })            │
+│  2. Create adapter + runner:                                       │
+│     const adapter = createAdapter(suite.agent)                     │
+│     const runner = new Runner(adapter, { judgeScorer, ... })       │
+│                                                                     │
+│  3. Run evaluation:                                                │
+│     const result = await runner.run(suite)                         │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         SENSEI ENGINE                               │
 │                                                                     │
-│  3. Load suite "sdr" (suite.yaml)                                  │
-│  4. Connect to agent via HTTP adapter                              │
-│  5. Health check ✓                                                 │
+│  4. Validate depends_on references                                 │
+│  5. Connect to agent via adapter                                   │
+│  6. Health check ✓                                                 │
 │                                                                     │
 │  ┌─── LAYER 1: EXECUTION (50% of score) ─────────────────────┐    │
 │  │                                                             │    │
-│  │  Scenario: "cold-email-personalization"                     │    │
-│  │  ┌──────────┐    POST /execute              ┌──────────┐   │    │
-│  │  │  SENSEI   │──── { task: "Write cold ───▶ │  AGENT   │   │    │
+│  │  Scenario: "cold-email"                                     │    │
+│  │  ┌──────────┐    adapter.send()             ┌──────────┐   │    │
+│  │  │  RUNNER   │──── { prompt: "Write cold ──▶│  AGENT   │   │    │
 │  │  │          │      email to Sarah Chen,     │          │   │    │
 │  │  │          │      VP Eng at TechCorp..." } │          │   │    │
 │  │  │          │                                │          │   │    │
@@ -40,53 +43,26 @@
 │  │  ├─ personalization: 4.5/5 (LLM judge) ✅                  │    │
 │  │  ├─ value_alignment: 4.8/5 (LLM judge) ✅                  │    │
 │  │  ├─ call_to_action: 4.0/5 (LLM judge) ✅                   │    │
-│  │  ├─ length: 142 words (automated, range 80-200) ✅          │    │
+│  │  ├─ brevity: 142 words (automated word-count) ✅            │    │
 │  │  └─ subject_line: 4.6/5 (LLM judge) ✅                     │    │
-│  │                                                             │    │
-│  │  Scenario: "call-transcript-analysis"                       │    │
-│  │  ┌──────────┐    POST /execute              ┌──────────┐   │    │
-│  │  │  SENSEI   │──── { task: "Analyze this ──▶│  AGENT   │   │    │
-│  │  │          │      SDR call transcript",    │          │   │    │
-│  │  │          │      files: [transcript.txt]} │          │   │    │
-│  │  │          │◀─── { response: "Analysis: ──│          │   │    │
-│  │  │          │      Talk ratio 38/62%,       │          │   │    │
-│  │  │          │      Avg latency 1.2s..." }   │          │   │    │
-│  │  └──────────┘                                └──────────┘   │    │
-│  │       │                                                     │    │
-│  │       ▼                                                     │    │
-│  │  Score KPIs:                                                │    │
-│  │  ├─ talk_ratio_detection: 95/100 (automated) ✅             │    │
-│  │  ├─ latency_analysis: 90/100 (automated) ✅                 │    │
-│  │  ├─ objection_handling: 4.2/5 (LLM judge) ✅               │    │
-│  │  ├─ next_steps: 4.5/5 (LLM judge) ✅                       │    │
-│  │  └─ qualification_accuracy: 4.0/5 (LLM judge) ✅           │    │
 │  │                                                             │    │
 │  │  EXECUTION SCORE: 91.2 / 100                               │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 │                                                                     │
 │  ┌─── LAYER 2: REASONING (30% of score) ─────────────────────┐    │
 │  │                                                             │    │
-│  │  Scenario: "explain-strategy"                               │    │
-│  │  ┌──────────┐    POST /converse             ┌──────────┐   │    │
-│  │  │  SENSEI   │──── "Why did you choose ────▶│  AGENT   │   │    │
-│  │  │          │      this angle for the       │          │   │    │
-│  │  │          │      email?"                  │          │   │    │
-│  │  │          │◀─── "I focused on the ───────│          │   │    │
-│  │  │          │      Series B because..."     │          │   │    │
-│  │  │          │                                │          │   │    │
-│  │  │          │──── "What other approaches ──▶│          │   │    │
-│  │  │          │      did you consider?"       │          │   │    │
-│  │  │          │◀─── "I considered leading ───│          │   │    │
-│  │  │          │      with DevEx pain but..."  │          │   │    │
-│  │  │          │                                │          │   │    │
-│  │  │          │──── "If they don't respond, ─▶│          │   │    │
-│  │  │          │      what's your follow-up?"  │          │   │    │
-│  │  │          │◀─── "Day 3: LinkedIn touch,──│          │   │    │
-│  │  │          │      Day 7: value-add email"  │          │   │    │
+│  │  Scenario: "explain-strategy" (depends_on: cold-email)      │    │
+│  │  ┌──────────┐    adapter.send()             ┌──────────┐   │    │
+│  │  │  RUNNER   │──── { prompt: "Previous   ──▶│  AGENT   │   │    │
+│  │  │          │      output:\n<email>\n\n     │          │   │    │
+│  │  │          │      Why did you choose       │          │   │    │
+│  │  │          │      this angle?" }           │          │   │    │
+│  │  │          │◀─── { response: "I focused ──│          │   │    │
+│  │  │          │      on the Series B..." }    │          │   │    │
 │  │  └──────────┘                                └──────────┘   │    │
 │  │       │                                                     │    │
 │  │       ▼                                                     │    │
-│  │  Score KPIs (LLM judge evaluates all answers together):     │    │
+│  │  Score KPIs (via judgeScorer callback → Judge.evaluate):    │    │
 │  │  ├─ reasoning_depth: 4.3/5 ✅                               │    │
 │  │  └─ strategic_thinking: 4.0/5 ✅                            │    │
 │  │                                                             │    │
@@ -95,28 +71,31 @@
 │                                                                     │
 │  ┌─── LAYER 3: SELF-IMPROVEMENT (20% of score) ──────────────┐    │
 │  │                                                             │    │
-│  │  Scenario: "improve-after-feedback"                         │    │
-│  │  ┌──────────┐    POST /execute              ┌──────────┐   │    │
-│  │  │  SENSEI   │──── { task: "Rewrite the ───▶│  AGENT   │   │    │
-│  │  │          │      email. Feedback: too     │          │   │    │
-│  │  │          │      feature-focused, soften  │          │   │    │
-│  │  │          │      CTA to case study..." }  │          │   │    │
-│  │  │          │◀─── { response: "Subject: ───│          │   │    │
-│  │  │          │      How TechCorp could save  │          │   │    │
-│  │  │          │      20hrs/week on agent..." }│          │   │    │
+│  │  Scenario: "improve-email" (depends_on: cold-email)         │    │
+│  │  ┌──────────┐    adapter.send()             ┌──────────┐   │    │
+│  │  │  RUNNER   │──── { prompt: "Previous   ──▶│  AGENT   │   │    │
+│  │  │          │      output:\n<email>\n\n     │          │   │    │
+│  │  │          │      Rewrite incorporating    │          │   │    │
+│  │  │          │      feedback: too feature-   │          │   │    │
+│  │  │          │      focused, soften CTA" }   │          │   │    │
+│  │  │          │◀─── { response: "Subject:  ──│          │   │    │
+│  │  │          │      How TechCorp could       │          │   │    │
+│  │  │          │      save 20hrs/week..." }    │          │   │    │
 │  │  └──────────┘                                └──────────┘   │    │
 │  │       │                                                     │    │
 │  │       ▼                                                     │    │
-│  │  Score KPIs:                                                │    │
-│  │  ├─ feedback_incorporation: 4.5/5 (LLM judge)              │    │
-│  │  │   "Agent addressed all 3 feedback points" ✅             │    │
-│  │  └─ improvement_delta: 4.0/5 (comparative judge)            │    │
+│  │  Score KPIs (via comparatorScorer → Comparator.compare):    │    │
+│  │  ├─ improvement: 4.5/5 (comparative-judge)                  │    │
+│  │  │   "Agent addressed all feedback points" ✅               │    │
+│  │  └─ delta: 4.0/5 (comparative-judge)                        │    │
 │  │      "Compared v1 vs v2: outcome-focused, softer CTA" ✅   │    │
 │  │                                                             │    │
 │  │  SELF-IMPROVEMENT SCORE: 85.0 / 100                        │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 │                                                                     │
-│  6. AGGREGATE SCORES                                               │
+│  7. Disconnect adapter (always, via try/finally)                   │
+│                                                                     │
+│  8. AGGREGATE SCORES                                               │
 │     ┌──────────────────────────────────────────────────────┐       │
 │     │  Execution:        91.2 × 0.50 = 45.60              │       │
 │     │  Reasoning:        82.5 × 0.30 = 24.75              │       │
@@ -125,142 +104,124 @@
 │     │  OVERALL SCORE:    87.35 → 🥈 SILVER                │       │
 │     └──────────────────────────────────────────────────────┘       │
 │                                                                     │
-│  7. Generate report (JSON + HTML)                                  │
+│  9. Return SuiteResult (JSON)                                      │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        WORKDRAFT (receives result)                  │
+│                        CALLER (receives SuiteResult)                │
 │                                                                     │
-│  8. Store SuiteResult in database                                  │
-│  9. Display to company:                                            │
-│                                                                     │
-│  ┌──────────────────────────────────────────────────────────┐      │
-│  │  🤖 SalesBot Pro applied for "SDR Role"                  │      │
-│  │                                                          │      │
-│  │  Sensei Score: 87.3 🥈 Silver                           │      │
-│  │  ├─ 🎯 Task Execution:    91.2  ████████████░░ Excellent│      │
-│  │  ├─ 🧠 Reasoning:         82.5  █████████░░░░░ Good     │      │
-│  │  └─ 📈 Self-Improvement:  85.0  █████████░░░░░ Good     │      │
-│  │                                                          │      │
-│  │  Top strengths: Personalization, Value alignment         │      │
-│  │  Areas to improve: Strategic depth, CTA creativity       │      │
-│  │                                                          │      │
-│  │  [View Full Report]  [Start Live Trial]  [Reject]       │      │
-│  └──────────────────────────────────────────────────────────┘      │
-│                                                                     │
-│  10. If company approves → proceed to 1-hour live trial            │
-│  11. If score < 60 → auto-reject with feedback to agent            │
+│  10. Use result:                                                   │
+│      - reporter.toTerminal(result) → pretty console output         │
+│      - reporter.toJSON(result) → machine-readable JSON             │
+│      - generateHtmlReport(result) → dark-theme HTML report         │
+│      - Store in database                                           │
+│      - Make hiring decision based on badge                         │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Integration Code (WorkDraft side)
+## Integration Code (WorkDraft)
 
 ```typescript
-import { SenseiEngine, HttpAdapter } from '@sensei/engine';
+import { SuiteLoader, Runner, Judge, Comparator, createAdapter } from '@sensei/engine';
+import type { KPIResult } from '@sensei/engine';
 
 async function onAgentApply(application: Application) {
-  // 1. Create engine with judge config
-  const engine = new SenseiEngine({
-    judge: {
-      model: 'gpt-4o',
-      provider: 'openai',
-      temperature: 0.0,      // Deterministic scoring
-    },
-  });
+  // 1. Load the relevant suite
+  const loader = new SuiteLoader();
+  const suite = await loader.loadFile(`./suites/${application.job.role_type}/suite.yaml`);
 
-  // 2. Connect to the applying agent
-  const adapter = new HttpAdapter({
-    url: application.agent_endpoint,
+  // 2. Override agent endpoint with applicant's URL
+  suite.agent = {
+    adapter: 'http',
+    endpoint: application.agent_endpoint,
     timeout_ms: 60000,
-    headers: { 'Authorization': `Bearer ${application.agent_token}` },
+    headers: { Authorization: `Bearer ${application.agent_token}` },
+  };
+
+  // 3. Create components
+  const adapter = createAdapter(suite.agent);
+  const judge = suite.judge ? new Judge(suite.judge) : undefined;
+  const comparator = suite.judge ? new Comparator(suite.judge) : undefined;
+
+  // 4. Run evaluation
+  const runner = new Runner(adapter, {
+    retries: 2,
+    judgeScorer: judge ? async (kpi, agentOutput, scenarioInput) => {
+      const verdict = await judge.evaluate({ kpi, scenarioInput: { prompt: scenarioInput }, agentOutput });
+      return {
+        kpi_id: kpi.id, kpi_name: kpi.name,
+        score: (verdict.score / verdict.max_score) * 100,
+        raw_score: verdict.score, max_score: verdict.max_score,
+        weight: kpi.weight, method: kpi.method, evidence: verdict.reasoning,
+      } satisfies KPIResult;
+    } : undefined,
+    comparatorScorer: comparator ? async (kpi, task, feedback, orig, revised) => {
+      const verdict = await comparator.compare({ kpi, task, feedback, originalOutput: orig, revisedOutput: revised });
+      return {
+        kpi_id: kpi.id, kpi_name: kpi.name,
+        score: (verdict.score / verdict.max_score) * 100,
+        raw_score: verdict.score, max_score: verdict.max_score,
+        weight: kpi.weight, method: kpi.method, evidence: verdict.reasoning,
+      } satisfies KPIResult;
+    } : undefined,
   });
 
-  // 3. Run the relevant suite based on job role
-  const result = await engine.run({
-    suite: mapJobRoleToSuite(application.job.role_type),
-    adapter,
-    options: {
-      multiJudge: true,     // 3 judges, median score (for hiring decisions)
-    },
-  });
+  const result = await runner.run(suite);
 
-  // 4. Store result
+  // 5. Store and act on result
   await db.evaluations.create({
     application_id: application.id,
     suite: result.suite_id,
     overall_score: result.scores.overall,
-    execution_score: result.scores.execution,
-    reasoning_score: result.scores.reasoning,
-    improvement_score: result.scores.self_improvement,
     badge: result.badge,
     full_report: result,
   });
 
-  // 5. Auto-decision or queue for review
   if (result.scores.overall < 60) {
     await rejectApplication(application, result);
   } else {
     await queueForReview(application, result);
-    await notifyCompany(application, result);
   }
-}
-
-function mapJobRoleToSuite(roleType: string): string {
-  const map: Record<string, string> = {
-    'sdr': 'sdr',
-    'support': 'support',
-    'content_writer': 'content-writer',
-    'qa': 'qa-engineer',
-    'analyst': 'data-analyst',
-    'developer': 'developer',
-  };
-  return map[roleType] || 'general';
 }
 ```
 
 ## Sequence Diagram
 
 ```
-Agent Owner    WorkDraft       Sensei Engine     LLM Judge       Agent
+Agent Owner    Caller          Sensei Engine     LLM Judge       Agent
     │              │                │                │              │
-    │──applies──▶  │                │                │              │
+    │──request──▶  │                │                │              │
     │              │                │                │              │
-    │              │──evaluate()──▶ │                │              │
+    │              │──runner.run()─▶│                │              │
     │              │                │                │              │
-    │              │                │──health check──────────────▶ │
-    │              │                │◀──── ok ───────────────────── │
+    │              │                │──adapter.connect()──────────▶│
+    │              │                │──healthCheck()──────────────▶│
+    │              │                │◀──── true ──────────────────│
     │              │                │                │              │
     │              │                │  LAYER 1: EXECUTION          │
-    │              │                │──task 1────────────────────▶ │
-    │              │                │◀──response 1──────────────── │
-    │              │                │──score KPIs──▶ │              │
-    │              │                │◀──verdicts──── │              │
-    │              │                │                │              │
-    │              │                │──task 2────────────────────▶ │
-    │              │                │◀──response 2──────────────── │
-    │              │                │──score KPIs──▶ │              │
-    │              │                │◀──verdicts──── │              │
+    │              │                │──send(prompt)──────────────▶│
+    │              │                │◀──{ response }─────────────│
+    │              │                │──judgeScorer()─▶│             │
+    │              │                │◀──verdict────── │             │
     │              │                │                │              │
     │              │                │  LAYER 2: REASONING           │
-    │              │                │──"why did you?"────────────▶ │
-    │              │                │◀──explanation──────────────── │
-    │              │                │──"what else?"──────────────▶ │
-    │              │                │◀──alternatives─────────────── │
-    │              │                │──score reasoning─▶│            │
-    │              │                │◀──verdicts─────── │            │
+    │              │                │──send(prev+prompt)─────────▶│
+    │              │                │◀──{ response }─────────────│
+    │              │                │──judgeScorer()─▶│             │
+    │              │                │◀──verdict────── │             │
     │              │                │                │              │
     │              │                │  LAYER 3: SELF-IMPROVEMENT    │
-    │              │                │──feedback + redo───────────▶ │
-    │              │                │◀──improved output──────────── │
-    │              │                │──compare v1 vs v2─▶│          │
-    │              │                │◀──delta score────── │          │
+    │              │                │──send(prev+feedback+prompt)─▶│
+    │              │                │◀──{ response }──────────────│
+    │              │                │──comparatorScorer()─▶│        │
+    │              │                │◀──verdict───────────│         │
     │              │                │                │              │
-    │              │                │  AGGREGATE                   │
-    │              │                │  87.3 🥈 Silver              │
-    │              │◀──result──────│                │              │
+    │              │                │──adapter.disconnect()         │
+    │              │                │  (always, via try/finally)    │
     │              │                │                │              │
-    │              │  store + notify                │              │
-    │◀──feedback── │                │                │              │
+    │              │                │  AGGREGATE: 87.3 🥈           │
+    │              │◀──SuiteResult──│                │              │
     │              │                │                │              │
+    │◀──result──── │                │                │              │
 ```

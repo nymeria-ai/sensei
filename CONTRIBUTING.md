@@ -19,10 +19,11 @@ The most impactful contribution. Create a new suite for a professional role:
 
 ### 3. Build Adapters
 - Add support for new agent frameworks
-- Improve existing adapters
+- Improve existing adapters (HTTP, Stdio, OpenClaw)
 
 ### 4. Core Engine
 - Improve scoring algorithms
+- Add new automated scorer types
 - Add new reporter formats
 - Optimize performance
 - Fix bugs
@@ -34,7 +35,7 @@ git clone https://github.com/nymeria-ai/sensei.git
 cd sensei
 npm install
 npm run build
-npm test
+npm test          # runs vitest across all packages
 ```
 
 ## Suite Contribution Guidelines
@@ -46,15 +47,15 @@ npm test
    - 3 execution scenarios
    - 2 reasoning scenarios
    - 1 self-improvement scenario
-5. Each KPI must have a clear rubric
+5. Each KPI must have a clear rubric (for LLM-judge) or expected value (for automated)
 6. Test your suite against a real agent before submitting
 
 ## Code Style
 
 - TypeScript strict mode
-- ESLint + Prettier
 - Meaningful variable names
 - Comments for complex logic only
+- All new code should have corresponding tests
 
 ## Pull Request Process
 
@@ -62,7 +63,8 @@ npm test
 2. Create a feature branch
 3. Make your changes
 4. Run tests: `npm test`
-5. Submit PR with clear description
+5. Run build: `npm run build`
+6. Submit PR with clear description
 
 ## License
 

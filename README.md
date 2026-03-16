@@ -29,36 +29,81 @@ npm install -g @sensei/cli
 ### Programmatic Usage
 
 ```typescript
-import { SuiteLoader, Runner, Scorer, Reporter } from '@sensei/engine';
+import { SuiteLoader, Runner, Judge, Comparator, createAdapter } from '@sensei/engine';
 
 // Load a test suite
 const loader = new SuiteLoader();
-const suite = await loader.loadFile('./suites/sdr/suite.yaml');
+const suite = await loader.loadFile('./suites/sdr-qualification/suite.yaml');
 
-// Run against your agent (provide an adapter)
-const runner = new Runner(adapter, { retries: 2 });
+// Create adapter from suite config (or override)
+const adapter = createAdapter(suite.agent!);
+
+// Create LLM judge for quality evaluation
+const judge = new Judge(suite.judge!);
+const comparator = new Comparator(suite.judge!);
+
+// Run against your agent
+const runner = new Runner(adapter, {
+  retries: 2,
+  judgeScorer: async (kpi, agentOutput, scenarioInput) => {
+    const verdict = await judge.evaluate({ kpi, scenarioInput: { prompt: scenarioInput }, agentOutput });
+    return {
+      kpi_id: kpi.id, kpi_name: kpi.name,
+      score: (verdict.score / verdict.max_score) * 100,
+      raw_score: verdict.score, max_score: verdict.max_score,
+      weight: kpi.weight, method: kpi.method, evidence: verdict.reasoning,
+    };
+  },
+});
+
 const result = await runner.run(suite);
 
 // Output results
+import { Reporter } from '@sensei/engine';
 const reporter = new Reporter();
 console.log(reporter.toTerminal(result));   // Pretty terminal output
 console.log(reporter.toJSON(result));       // Machine-readable JSON
+```
+
+### SDK Usage (Programmatic Suite Building)
+
+```typescript
+import { SuiteBuilder, scenario, kpi } from '@sensei/sdk';
+
+const suite = new SuiteBuilder()
+  .id('my-eval')
+  .name('My Agent Evaluation')
+  .version('1.0.0')
+  .agent({ adapter: 'http', endpoint: 'http://localhost:3000' })
+  .judge({ provider: 'openai', model: 'gpt-4o' })
+  .addScenario(scenario('write-email', {
+    layer: 'execution',
+    input: { prompt: 'Write a professional cold email to Sarah Chen, VP Eng at TechCorp.' },
+    kpis: [
+      kpi('personalization', { weight: 0.6, method: 'llm-judge', config: { rubric: '5: Excellent personalization\n1: Generic', max_score: 5 } }),
+      kpi('length', { weight: 0.4, method: 'automated', config: { type: 'word-count', expected: { min: 80, max: 200 } } }),
+    ],
+  }))
+  .build();
 ```
 
 ### CLI Usage
 
 ```bash
 # Run a full suite against your agent
-sensei test --suite sdr --agent http://localhost:3000/agent
+sensei run --suite ./suites/sdr-qualification/suite.yaml --target http://localhost:3000
 
-# Run a specific scenario
-sensei test --suite sdr --scenario cold-email --agent ./my-agent.sh
+# Run with a specific judge model
+sensei run --suite ./my-suite.yaml --target http://localhost:3000 --judge-model gpt-4o
 
 # Validate a custom suite definition
 sensei validate ./my-suite.yaml
 
-# List available suites
-sensei list
+# Generate a new suite template
+sensei init my-suite
+
+# Render a report from a previous JSON result
+sensei report --input ./result.json
 ```
 
 ## Three-Layer Evaluation
@@ -76,7 +121,7 @@ After task completion, the agent is questioned about its approach. Why did it ch
 ### Layer 3: Self-Improvement (20%)
 *"Can the agent learn from feedback?"*
 
-Give the agent specific feedback. Re-run the test. Compare before/after. Agents that improve score higher.
+Give the agent specific feedback. Re-run the test. Compare before/after using a comparative judge. Agents that improve score higher.
 
 ## Scoring
 
@@ -86,19 +131,28 @@ Layer Score    = average of scenario scores in that layer
 Overall Score  = execution × 0.50 + reasoning × 0.30 + self_improvement × 0.20
 ```
 
+Note: If a suite only defines some layers (e.g., only execution), missing layers are excluded and the remaining weights are re-normalized. A suite with only execution scenarios can still achieve 100%.
+
 ### Badge Levels
 
 | Badge | Score | Meaning |
 |-------|-------|---------|
-| ![Gold](assets/badges/gold.svg) | 90+ | Exceptional, top-tier agent |
-| ![Silver](assets/badges/silver.svg) | 75-89 | Solid professional performance |
-| ![Bronze](assets/badges/bronze.svg) | 60-74 | Meets minimum qualification |
+| 🥇 Gold | 90+ | Exceptional, top-tier agent |
+| 🥈 Silver | 75-89 | Solid professional performance |
+| 🥉 Bronze | 60-74 | Meets minimum qualification |
 
 ### KPI Scoring Methods
 
-- **Automated** — deterministic checks: `contains`, `regex`, `json-schema`, `numeric-range`
+- **Automated** — deterministic checks:
+  - `contains` — output includes expected string
+  - `regex` — output matches regex pattern
+  - `json-schema` — output validates against JSON Schema (via Ajv)
+  - `json-parse` — output is valid JSON
+  - `numeric-range` — output parses to number within range
+  - `word-count` — output word count within range
+  - `function` — custom scoring function via SDK `registerKPI()`
 - **LLM Judge** — an LLM evaluates output quality against a rubric
-- **Comparative Judge** — compares before/after outputs for improvement
+- **Comparative Judge** — compares before/after outputs for self-improvement scoring
 
 ## Suite Definition (YAML)
 
@@ -106,9 +160,21 @@ Overall Score  = execution × 0.50 + reasoning × 0.30 + self_improvement × 0.2
 id: my-suite
 name: My Test Suite
 version: "1.0.0"
+
 agent:
   adapter: http
   endpoint: http://localhost:3000
+  timeout_ms: 60000
+
+judge:
+  provider: openai
+  model: gpt-4o
+  temperature: 0.0
+
+defaults:
+  timeout_ms: 60000
+  judge_model: gpt-4o
+
 scenarios:
   - id: basic-task
     name: Basic Task
@@ -118,11 +184,14 @@ scenarios:
     kpis:
       - id: quality
         name: Output Quality
-        weight: 0.7
+        weight: 0.5
         method: llm-judge
         config:
-          rubric: "Score 1-10 on clarity, tone, and completeness"
-          max_score: 10
+          rubric: |
+            5: Excellent — clear, professional, compelling
+            3: Adequate — gets the point across
+            1: Poor — unclear or unprofessional
+          max_score: 5
       - id: has-subject
         name: Has Subject Line
         weight: 0.3
@@ -130,29 +199,91 @@ scenarios:
         config:
           type: regex
           expected: "^Subject:"
+      - id: length
+        name: Email Length
+        weight: 0.2
+        method: automated
+        config:
+          type: word-count
+          expected: { min: 50, max: 300 }
+
+  - id: explain-approach
+    name: Explain Approach
+    layer: reasoning
+    depends_on: basic-task
+    input:
+      prompt: "Explain your approach to the previous task."
+    kpis:
+      - id: clarity
+        name: Reasoning Clarity
+        weight: 1.0
+        method: llm-judge
+        config:
+          rubric: |
+            5: Clear, structured, insightful reasoning
+            3: Adequate explanation
+            1: Vague or missing reasoning
+          max_score: 5
+
+  - id: improve-after-feedback
+    name: Improve After Feedback
+    layer: self-improvement
+    depends_on: basic-task
+    input:
+      prompt: "Redo the original task incorporating this feedback."
+      feedback: "Be more specific and provide concrete examples."
+    kpis:
+      - id: improvement
+        name: Improvement Over Original
+        weight: 1.0
+        method: comparative-judge
+        config:
+          comparison_type: improvement
 ```
 
 ## Packages
 
 | Package | Description |
 |---------|-------------|
-| `@sensei/engine` | Core evaluation engine — loader, runner, scorer, reporter |
-| `@sensei/cli` | Command-line interface |
-| `@sensei/sdk` | SDK for building custom suites programmatically |
+| `@sensei/engine` | Core evaluation engine — loader, runner, scorer, judge, comparator, reporter, adapters |
+| `@sensei/cli` | Command-line interface — `run`, `validate`, `init`, `report` |
+| `@sensei/sdk` | SDK for building custom suites programmatically + custom KPI functions |
 
 ## Architecture
 
 ```
 packages/
 ├── engine/src/
-│   ├── types.ts       # Core type definitions
-│   ├── schema.ts      # Zod validation schemas
-│   ├── loader.ts      # YAML suite parser + validator
-│   ├── runner.ts      # Scenario execution orchestrator
-│   ├── scorer.ts      # KPI scoring + aggregation
-│   └── reporter.ts    # JSON and terminal output
-├── cli/               # CLI tool
-└── sdk/               # Suite authoring SDK
+│   ├── types.ts          # Core type definitions + constants
+│   ├── schema.ts         # Zod validation schemas
+│   ├── loader.ts         # YAML suite parser + fixture resolution
+│   ├── runner.ts         # Scenario execution orchestrator
+│   ├── scorer.ts         # KPI scoring + layer aggregation
+│   ├── judge.ts          # LLM-as-judge (single + multi-judge)
+│   ├── comparator.ts     # Before/after comparative evaluation
+│   ├── reporter.ts       # JSON + ANSI terminal output
+│   ├── llm-client.ts     # Shared OpenAI-compatible client factory
+│   └── adapters/
+│       ├── types.ts      # Adapter registry + factory
+│       ├── http.ts       # HTTP POST adapter
+│       ├── stdio.ts      # Stdin/stdout JSON-line adapter
+│       └── openclaw.ts   # OpenClaw native adapter
+├── cli/src/
+│   ├── index.ts          # CLI entry point (commander)
+│   ├── loader.ts         # Suite file loader (YAML + JSON with Zod)
+│   ├── format.ts         # Terminal + HTML report formatting
+│   ├── html-report.ts    # Self-contained dark-theme HTML reports
+│   ├── output.ts         # File output utility
+│   └── commands/
+│       ├── run.ts        # sensei run — execute suite against agent
+│       ├── validate.ts   # sensei validate — check suite YAML
+│       ├── init.ts       # sensei init — scaffold new suite
+│       └── report.ts     # sensei report — render from JSON result
+└── sdk/src/
+    ├── index.ts          # Public API exports
+    ├── builder.ts        # SuiteBuilder fluent API + helpers
+    ├── custom-kpi.ts     # Custom KPI function registry
+    └── result-utils.ts   # Filter, compare, summarize results
 ```
 
 ## Adapters
@@ -167,25 +298,46 @@ interface AgentAdapter {
   send(input: AdapterInput): Promise<AdapterOutput>;
   disconnect(): Promise<void>;
 }
+
+interface AdapterInput {
+  prompt: string;
+  context?: Record<string, unknown>;
+  timeout_ms?: number;
+}
+
+interface AdapterOutput {
+  response: string;
+  duration_ms: number;
+  metadata?: Record<string, unknown>;
+  error?: string;
+}
 ```
 
-Built-in adapters: **HTTP**, **Stdio** (more coming: OpenClaw, LangChain)
+Built-in adapters:
+- **HTTP** — POST JSON to an endpoint, get JSON response
+- **Stdio** — Spawn a child process, communicate via stdin/stdout JSON lines
+- **OpenClaw** — Native integration with OpenClaw agents
 
 ## Roadmap
 
 - [x] Architecture & specification
 - [x] Core engine (runner, scorer, loader, reporter)
 - [x] Zod schema validation
-- [x] Unit tests (52 tests)
+- [x] LLM Judge integration (single + multi-judge)
+- [x] Comparative Judge (before/after self-improvement)
+- [x] HTTP, Stdio, OpenClaw adapters
+- [x] CLI commands (`run`, `validate`, `init`, `report`)
+- [x] SDR test suite with fixtures
+- [x] HTML reporter (dark theme)
+- [x] Terminal reporter (ANSI colors)
+- [x] SDK with fluent SuiteBuilder API
+- [x] Custom KPI function registry
+- [x] 173 unit + integration tests
 - [x] CI/CD workflows
-- [ ] CLI commands (test, list, validate, info)
-- [ ] LLM Judge integration
-- [ ] HTTP & Stdio adapters
-- [ ] SDR test suite
 - [ ] Additional test suites (Support, Content, QA, Data, Developer)
-- [ ] HTML reporter
 - [ ] Web dashboard
 - [ ] Community suite marketplace
+- [ ] npm publish to registry
 
 ## Contributing
 
