@@ -43,3 +43,29 @@ export function listCustomKPIs(): CustomKPIEntry[] {
 export function clearCustomKPIs(): void {
   registry.clear();
 }
+
+/**
+ * Invoke a registered custom KPI with validation on the returned score.
+ * Throws if KPI not found, or if returned score is NaN, Infinity, negative, or > maxScore.
+ */
+export async function invokeKPI(
+  id: string,
+  agentOutput: string,
+  context?: Record<string, unknown>,
+): Promise<{ score: number; maxScore: number }> {
+  const entry = registry.get(id);
+  if (!entry) {
+    throw new Error(`Custom KPI "${id}" is not registered`);
+  }
+  const score = await entry.fn(agentOutput, context);
+  if (typeof score !== 'number' || Number.isNaN(score) || !Number.isFinite(score)) {
+    throw new Error(`Custom KPI "${id}" returned invalid score: ${score}`);
+  }
+  if (score < 0) {
+    throw new Error(`Custom KPI "${id}" returned negative score: ${score}`);
+  }
+  if (score > entry.maxScore) {
+    throw new Error(`Custom KPI "${id}" returned score ${score} exceeding maxScore ${entry.maxScore}`);
+  }
+  return { score, maxScore: entry.maxScore };
+}

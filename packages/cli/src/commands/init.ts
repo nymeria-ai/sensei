@@ -22,11 +22,16 @@ function ask(rl: ReturnType<typeof createInterface>, question: string, defaultVa
   });
 }
 
+/** Escape a string for safe YAML double-quoted scalar */
+function yamlEscape(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+}
+
 function generateSuiteYaml(answers: InitAnswers): string {
   return `id: ${answers.id}
 version: ${answers.version}
-name: "${answers.name}"
-description: "${answers.description}"
+name: "${yamlEscape(answers.name)}"
+description: "${yamlEscape(answers.description)}"
 
 agent:
   adapter: http
@@ -143,10 +148,6 @@ export function registerInitCommand(program: Command): void {
       await mkdir(dirname(outPath), { recursive: true });
       await writeFile(outPath, yaml, 'utf-8');
 
-      const parentOpts = program.opts();
-      if (!parentOpts.verbose === false) {
-        // always print path
-      }
       console.log(`Suite template written to ${outPath}`);
     });
 }

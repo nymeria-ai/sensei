@@ -30,7 +30,7 @@ function kpiRows(kpis: KPIResult[]): string {
       <td><span class="score-pill" style="background:${scoreColor(k.score)}">${k.score.toFixed(1)}</span></td>
       <td>${k.raw_score}/${k.max_score}</td>
       <td>${k.weight}</td>
-      <td><code>${k.method}</code></td>
+      <td><code>${esc(k.method)}</code></td>
       <td class="evidence">${esc(k.evidence)}</td>
     </tr>`,
     )

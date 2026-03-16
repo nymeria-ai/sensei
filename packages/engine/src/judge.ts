@@ -55,6 +55,8 @@ Respond in JSON:
 
 // ─── Core Judge ─────────────────────────────────────────────────────
 
+const DEFAULT_CALL_TIMEOUT_MS = 60_000;
+
 async function callJudge(
   client: OpenAI,
   model: string,
@@ -66,14 +68,25 @@ async function callJudge(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const completion = await client.chat.completions.create({
-        model,
-        temperature,
-        messages: [
-          { role: 'system', content: prompt.system },
-          { role: 'user', content: prompt.user },
-        ],
-      });
+      // M7: Per-call timeout via AbortController
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), DEFAULT_CALL_TIMEOUT_MS);
+      let completion;
+      try {
+        completion = await client.chat.completions.create(
+          {
+            model,
+            temperature,
+            messages: [
+              { role: 'system', content: prompt.system },
+              { role: 'user', content: prompt.user },
+            ],
+          },
+          { signal: controller.signal as AbortSignal },
+        );
+      } finally {
+        clearTimeout(timer);
+      }
 
       const raw = completion.choices[0]?.message?.content ?? '';
       return parseVerdict(raw);

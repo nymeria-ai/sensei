@@ -111,9 +111,15 @@ export class Comparator {
         const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
         const parsed = JSON.parse(cleaned) as Record<string, unknown>;
 
+        const score = Number(parsed.score);
+        const max_score = Number(parsed.max_score);
+        if (Number.isNaN(score) || Number.isNaN(max_score)) {
+          throw new Error(`Invalid comparator verdict — NaN score/max_score from: ${raw}`);
+        }
+
         return {
-          score: Number(parsed.score),
-          max_score: Number(parsed.max_score),
+          score,
+          max_score,
           reasoning: String(parsed.reasoning ?? ''),
           confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0.5)),
         };

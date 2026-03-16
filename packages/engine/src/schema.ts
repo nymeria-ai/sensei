@@ -84,6 +84,12 @@ export const JudgeConfigSchema = z.object({
 
 // ─── Suite Definition ────────────────────────────────────────────────
 
+// M13: Suite-level defaults that apply to all scenarios
+export const SuiteDefaultsSchema = z.object({
+  timeout_ms: z.number().positive().optional(),
+  judge_model: z.string().optional(),
+}).optional();
+
 export const SuiteDefinitionSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -91,6 +97,7 @@ export const SuiteDefinitionSchema = z.object({
   description: z.string().optional(),
   agent: AgentConfigSchema.optional(),
   judge: JudgeConfigSchema.optional(),
+  defaults: SuiteDefaultsSchema,
   scenarios: z.array(ScenarioDefinitionSchema).min(1),
   metadata: z.record(z.unknown()).optional(),
 });

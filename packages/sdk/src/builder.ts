@@ -145,10 +145,10 @@ export class SuiteBuilder {
       name: this._name,
       version: this._version,
       description: this._description,
-      agent: this._agent,
-      judge: this._judge,
-      scenarios: this._scenarios,
-      metadata: this._metadata,
+      agent: { ...this._agent },
+      judge: this._judge ? { ...this._judge } : undefined,
+      scenarios: [...this._scenarios],
+      metadata: this._metadata ? { ...this._metadata } : undefined,
     };
   }
 }

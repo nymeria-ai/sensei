@@ -36,7 +36,9 @@ export interface ResultComparison {
 export function compareResults(before: SuiteResult, after: SuiteResult): ResultComparison {
   const scenarioDeltas: ResultComparison['scenarioDeltas'] = [];
 
+  const afterIds = new Set<string>();
   for (const afterScenario of after.scenarios) {
+    afterIds.add(afterScenario.scenario_id);
     const beforeScenario = before.scenarios.find((s) => s.scenario_id === afterScenario.scenario_id);
     scenarioDeltas.push({
       scenarioId: afterScenario.scenario_id,
@@ -44,6 +46,18 @@ export function compareResults(before: SuiteResult, after: SuiteResult): ResultC
       after: afterScenario.score,
       delta: afterScenario.score - (beforeScenario?.score ?? 0),
     });
+  }
+
+  // M12: Include scenarios that were in before but removed in after
+  for (const beforeScenario of before.scenarios) {
+    if (!afterIds.has(beforeScenario.scenario_id)) {
+      scenarioDeltas.push({
+        scenarioId: beforeScenario.scenario_id,
+        before: beforeScenario.score,
+        after: 0,
+        delta: -beforeScenario.score,
+      });
+    }
   }
 
   const overallDelta = after.scores.overall - before.scores.overall;

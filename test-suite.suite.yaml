@@ -1,0 +1,81 @@
+id: test-suite
+version: 1.0.0
+name: "Test Suite"
+description: "Evaluation suite for test-suite"
+
+agent:
+  adapter: http
+  endpoint: "http://localhost:3000"
+  timeout_ms: 60000
+
+judge:
+  provider: openai
+  model: gpt-4o
+  temperature: 0.0
+
+scenarios:
+  - id: example-task
+    name: "Example Task"
+    layer: execution
+    input:
+      prompt: |
+        Complete this example task.
+      context: {}
+    kpis:
+      - id: quality
+        name: "Output Quality"
+        weight: 0.5
+        method: llm-judge
+        config:
+          rubric: |
+            5: Excellent output, fully addresses the task
+            4: Good output with minor gaps
+            3: Acceptable but incomplete
+            2: Poor quality, major issues
+            1: Does not address the task
+          max_score: 5
+
+      - id: format
+        name: "Format Compliance"
+        weight: 0.5
+        method: automated
+        config:
+          type: contains
+          expected: ""
+
+  - id: explain-approach
+    name: "Explain Approach"
+    layer: reasoning
+    depends_on: example-task
+    input:
+      prompt: |
+        Explain your approach to the previous task.
+      previous_scenario: example-task
+    kpis:
+      - id: clarity
+        name: "Reasoning Clarity"
+        weight: 1.0
+        method: llm-judge
+        config:
+          rubric: |
+            5: Clear, structured, insightful reasoning
+            3: Adequate explanation
+            1: Vague or missing reasoning
+          max_score: 5
+
+  - id: improve-after-feedback
+    name: "Improve After Feedback"
+    layer: self-improvement
+    depends_on: example-task
+    input:
+      prompt: |
+        Redo the original task incorporating this feedback.
+      feedback: "Please be more specific and provide concrete examples."
+      previous_scenario: example-task
+    kpis:
+      - id: improvement
+        name: "Improvement Over Original"
+        weight: 1.0
+        method: comparative-judge
+        config:
+          comparison_type: improvement

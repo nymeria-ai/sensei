@@ -3,6 +3,7 @@
  */
 
 import type { SuiteResult } from './types.js';
+import { LAYER_WEIGHTS } from './types.js';
 
 // ─── JSON Reporter ───────────────────────────────────────────────────
 
@@ -66,9 +67,12 @@ export function toTerminal(result: SuiteResult): string {
   // Layer scores
   lines.push(`  ${BOLD}Layer Scores${RESET}`);
   lines.push(`  ${DIM}${'─'.repeat(40)}${RESET}`);
-  lines.push(`  Execution (50%):        ${colorScore(result.scores.execution)}`);
-  lines.push(`  Reasoning (30%):        ${colorScore(result.scores.reasoning)}`);
-  lines.push(`  Self-Improvement (20%): ${colorScore(result.scores.self_improvement)}`);
+  const pctExec = Math.round(LAYER_WEIGHTS['execution'] * 100);
+  const pctReason = Math.round(LAYER_WEIGHTS['reasoning'] * 100);
+  const pctImprove = Math.round(LAYER_WEIGHTS['self-improvement'] * 100);
+  lines.push(`  Execution (${pctExec}%):        ${colorScore(result.scores.execution)}`);
+  lines.push(`  Reasoning (${pctReason}%):        ${colorScore(result.scores.reasoning)}`);
+  lines.push(`  Self-Improvement (${pctImprove}%): ${colorScore(result.scores.self_improvement)}`);
   lines.push('');
 
   // Overall

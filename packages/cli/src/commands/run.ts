@@ -39,12 +39,25 @@ export function registerRunCommand(program: Command): void {
       try {
         const suite = await loadSuiteFile(opts.suite);
 
+        // m5: Validate timeout
+        const timeoutMs = parseInt(opts.timeout ?? '60000', 10);
+        if (Number.isNaN(timeoutMs)) {
+          throw new Error(`Invalid timeout value: "${opts.timeout}"`);
+        }
+
+        // M6: Validate agent config exists
+        if (!suite.agent && !opts.target) {
+          throw new Error(
+            'No agent configured. Provide --target or define an agent section in the suite file.',
+          );
+        }
+
         // Override agent config if --target provided
         if (opts.target) {
           suite.agent = {
             adapter: (opts.adapter ?? 'http') as AgentConfig['adapter'],
             endpoint: opts.target,
-            timeout_ms: parseInt(opts.timeout ?? '60000', 10),
+            timeout_ms: timeoutMs,
           };
         }
 
@@ -75,7 +88,7 @@ export function registerRunCommand(program: Command): void {
         // Build Runner with wired callbacks
         const runner = new Runner(adapter, {
           retries: 2,
-          timeout_ms: parseInt(opts.timeout ?? '60000', 10),
+          timeout_ms: timeoutMs,
           onScenarioComplete: verbose
             ? (res, idx, total) => console.error(`[sensei] [${idx + 1}/${total}] ${res.scenario_name}: ${res.score.toFixed(1)}`)
             : undefined,

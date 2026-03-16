@@ -335,12 +335,8 @@ describe('Runner error handling', () => {
       ],
     });
 
-    // Should still run — depends_on just won't inject previous output
-    const result = await runner.run(suite);
-    expect(result.scenarios).toHaveLength(1);
-    expect(result.scenarios[0].scenario_id).toBe('orphan');
-    // No "Previous output:" because dep wasn't found
-    expect(result.scenarios[0].agent_input).not.toContain('Previous output:');
+    // M8: Now throws on unresolved depends_on references
+    await expect(runner.run(suite)).rejects.toThrow(/Unresolved depends_on/);
   });
 });
 

@@ -149,7 +149,7 @@ scenarios: []
 `);
     const { stderr, exitCode } = runCli(['validate', yamlPath]);
     expect(exitCode).toBe(1);
-    expect(stderr).toContain('Invalid suite definition') || expect(stderr).toContain('Validation failed');
+    expect(stderr).toMatch(/Invalid suite definition|Validation failed/);
   });
 
   it('rejects a suite with invalid KPI weight', () => {

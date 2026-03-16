@@ -7,6 +7,7 @@
 import { readFile } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { SuiteLoader } from '@sensei/engine';
+import { SuiteDefinitionSchema } from '@sensei/engine';
 import type { SuiteDefinition } from '@sensei/engine';
 
 const loader = new SuiteLoader();
@@ -21,7 +22,7 @@ export async function loadSuiteFile(filePath: string): Promise<SuiteDefinition> 
 
   if (ext === '.json') {
     const raw = await readFile(filePath, 'utf-8');
-    return JSON.parse(raw) as SuiteDefinition;
+    return SuiteDefinitionSchema.parse(JSON.parse(raw));
   }
 
   throw new Error(`Unsupported suite file format: ${ext} (expected .yaml, .yml, or .json)`);

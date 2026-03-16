@@ -23,6 +23,6 @@ export { determineBadge, LAYER_WEIGHTS, BADGE_THRESHOLDS } from '@sensei/engine'
 
 // SDK builders and utilities
 export { SuiteBuilder, defineSuite, scenario, kpi } from './builder.js';
-export { registerKPI, getCustomKPI, listCustomKPIs } from './custom-kpi.js';
+export { registerKPI, getCustomKPI, listCustomKPIs, clearCustomKPIs, invokeKPI } from './custom-kpi.js';
 export type { CustomKPIFn, CustomKPIEntry } from './custom-kpi.js';
 export { filterByLayer, compareResults, formatSummary } from './result-utils.js';

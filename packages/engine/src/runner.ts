@@ -53,46 +53,57 @@ export class Runner {
   async run(suite: SuiteDefinition): Promise<SuiteResult> {
     const startTime = Date.now();
 
+    // Validate depends_on references before running (M8)
+    const scenarioIds = new Set(suite.scenarios.map((s) => s.id));
+    const badDeps = suite.scenarios
+      .filter((s) => s.depends_on && !scenarioIds.has(s.depends_on))
+      .map((s) => `"${s.id}" depends on unknown "${s.depends_on}"`);
+    if (badDeps.length > 0) {
+      throw new Error(`Unresolved depends_on references:\n  ${badDeps.join('\n  ')}`);
+    }
+
     // Connect and health check
     await this.adapter.connect();
-    const healthy = await this.adapter.healthCheck();
-    if (!healthy) {
-      throw new Error(`Agent health check failed for adapter "${this.adapter.name}"`);
+    try {
+      const healthy = await this.adapter.healthCheck();
+      if (!healthy) {
+        throw new Error(`Agent health check failed for adapter "${this.adapter.name}"`);
+      }
+
+      // Sort scenarios by layer order, preserving definition order within layers
+      const sorted = this.sortByLayer(suite.scenarios);
+
+      // Track outputs for depends_on references
+      const outputMap = new Map<string, string>();
+      const results: ScenarioResult[] = [];
+
+      for (let i = 0; i < sorted.length; i++) {
+        const scenario = sorted[i];
+        const result = await this.runScenarioWithRetry(scenario, outputMap, suite);
+        outputMap.set(scenario.id, result.agent_output);
+        results.push(result);
+        this.options.onScenarioComplete?.(result, i, sorted.length);
+      }
+
+      // Aggregate scores
+      const scores = calculateLayerScores(results);
+      const badge = determineBadge(scores.overall);
+
+      return {
+        suite_id: suite.id,
+        suite_version: suite.version,
+        agent_id: this.adapter.name,
+        timestamp: new Date().toISOString(),
+        scores,
+        scenarios: results,
+        badge,
+        duration_ms: Date.now() - startTime,
+        judge_model: suite.judge?.model,
+      };
+    } finally {
+      // M1: Always disconnect adapter, even on error
+      await this.adapter.disconnect();
     }
-
-    // Sort scenarios by layer order, preserving definition order within layers
-    const sorted = this.sortByLayer(suite.scenarios);
-
-    // Track outputs for depends_on references
-    const outputMap = new Map<string, string>();
-    const results: ScenarioResult[] = [];
-
-    for (let i = 0; i < sorted.length; i++) {
-      const scenario = sorted[i];
-      const result = await this.runScenarioWithRetry(scenario, outputMap, suite);
-      outputMap.set(scenario.id, result.agent_output);
-      results.push(result);
-      this.options.onScenarioComplete?.(result, i, sorted.length);
-    }
-
-    // Disconnect adapter
-    await this.adapter.disconnect();
-
-    // Aggregate scores
-    const scores = calculateLayerScores(results);
-    const badge = determineBadge(scores.overall);
-
-    return {
-      suite_id: suite.id,
-      suite_version: suite.version,
-      agent_id: this.adapter.name,
-      timestamp: new Date().toISOString(),
-      scores,
-      scenarios: results,
-      badge,
-      duration_ms: Date.now() - startTime,
-      judge_model: suite.judge?.model,
-    };
   }
 
   private sortByLayer(scenarios: ScenarioDefinition[]): ScenarioDefinition[] {

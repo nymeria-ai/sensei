@@ -13,9 +13,13 @@ import type { JudgeConfig } from './types.js';
  */
 function inferApiKey(provider: string): string {
   if (provider === 'anthropic') {
-    return process.env.ANTHROPIC_API_KEY ?? '';
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) throw new Error('ANTHROPIC_API_KEY environment variable is not set');
+    return key;
   }
-  return process.env.OPENAI_API_KEY ?? '';
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) throw new Error('OPENAI_API_KEY environment variable is not set');
+  return key;
 }
 
 /**

@@ -10,12 +10,20 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import type { AgentAdapter, AgentConfig, AdapterInput, AdapterOutput } from '../types.js';
 import { registerAdapter } from './types.js';
 
+interface PendingRequest {
+  resolve: (output: AdapterOutput) => void;
+  startTime: number;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export class StdioAdapter implements AgentAdapter {
   readonly name = 'stdio';
   private command: string;
   private args: string[];
   private timeoutMs: number;
   private proc: ChildProcess | null = null;
+  private buffer = '';
+  private pending: PendingRequest | null = null;
 
   constructor(private config: AgentConfig) {
     if (!config.command) {
@@ -31,6 +39,53 @@ export class StdioAdapter implements AgentAdapter {
     this.proc = spawn(this.command, this.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+
+    // M2: Class-level buffer + exit handler
+    this.proc.stdout!.on('data', (chunk: Buffer) => {
+      this.buffer += chunk.toString();
+      this.drainBuffer();
+    });
+
+    this.proc.on('exit', (code) => {
+      if (this.pending) {
+        clearTimeout(this.pending.timer);
+        this.pending.resolve({
+          response: '',
+          duration_ms: Date.now() - this.pending.startTime,
+          error: `Child process exited unexpectedly with code ${code}`,
+        });
+        this.pending = null;
+      }
+    });
+  }
+
+  private drainBuffer(): void {
+    if (!this.pending) return;
+
+    const newlineIdx = this.buffer.indexOf('\n');
+    if (newlineIdx === -1) return;
+
+    const line = this.buffer.slice(0, newlineIdx).trim();
+    this.buffer = this.buffer.slice(newlineIdx + 1);
+
+    const { resolve, startTime, timer } = this.pending;
+    this.pending = null;
+    clearTimeout(timer);
+
+    try {
+      const body = JSON.parse(line) as Record<string, unknown>;
+      resolve({
+        response: (body.response as string) ?? '',
+        duration_ms: Date.now() - startTime,
+        metadata: (body.structured as Record<string, unknown>) ?? undefined,
+      });
+    } catch {
+      resolve({
+        response: line,
+        duration_ms: Date.now() - startTime,
+        error: 'Failed to parse JSON from agent stdout',
+      });
+    }
   }
 
   async healthCheck(): Promise<boolean> {
@@ -47,6 +102,9 @@ export class StdioAdapter implements AgentAdapter {
 
     return new Promise<AdapterOutput>((resolve) => {
       const timer = setTimeout(() => {
+        if (this.pending?.resolve === resolve) {
+          this.pending = null;
+        }
         resolve({
           response: '',
           duration_ms: Date.now() - start,
@@ -54,37 +112,13 @@ export class StdioAdapter implements AgentAdapter {
         });
       }, timeout);
 
-      let buffer = '';
-      const onData = (chunk: Buffer) => {
-        buffer += chunk.toString();
-        // Look for a complete JSON line
-        const newlineIdx = buffer.indexOf('\n');
-        if (newlineIdx !== -1) {
-          clearTimeout(timer);
-          this.proc!.stdout!.off('data', onData);
-
-          const line = buffer.slice(0, newlineIdx).trim();
-          try {
-            const body = JSON.parse(line) as Record<string, unknown>;
-            resolve({
-              response: (body.response as string) ?? '',
-              duration_ms: Date.now() - start,
-              metadata: (body.structured as Record<string, unknown>) ?? undefined,
-            });
-          } catch {
-            resolve({
-              response: line,
-              duration_ms: Date.now() - start,
-              error: 'Failed to parse JSON from agent stdout',
-            });
-          }
-        }
-      };
-
-      this.proc!.stdout!.on('data', onData);
+      this.pending = { resolve, startTime: start, timer };
 
       const payload = JSON.stringify({ task: input.prompt, context: input.context }) + '\n';
       this.proc!.stdin!.write(payload);
+
+      // Check if buffer already has a complete line from earlier data
+      this.drainBuffer();
     });
   }
 
@@ -93,6 +127,8 @@ export class StdioAdapter implements AgentAdapter {
       this.proc.kill('SIGTERM');
       this.proc = null;
     }
+    this.buffer = '';
+    this.pending = null;
   }
 }
 
