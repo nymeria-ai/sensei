@@ -10,6 +10,10 @@ Test, evaluate, and certify AI agents across professional skills with standardiz
 
 > *"Before you hire an agent, ask the Sensei."*
 
+<p align="center">
+  <img src="docs/images/sensei-hero.jpg" alt="Sensei — The open-source qualification engine for AI agents" width="800" />
+</p>
+
 ## What is Sensei?
 
 Sensei is an open-source framework for evaluating AI agents on real-world professional tasks. It provides:
@@ -111,6 +115,10 @@ sensei report --input ./result.json
 ```
 
 ## Three-Layer Evaluation
+
+<p align="center">
+  <img src="docs/images/sensei-see-it-in-action.jpg" alt="Sensei — See It In Action" width="800" />
+</p>
 
 ### Layer 1: Task Execution (50%)
 *"Can the agent do the job?"*
@@ -291,6 +299,12 @@ packages/
     └── result-utils.ts   # Filter, compare, summarize results
 ```
 
+## Built-In Test Suites
+
+<p align="center">
+  <img src="docs/images/sensei-test-suites.jpg" alt="Sensei — Built-In Test Suites" width="800" />
+</p>
+
 ## Adapters
 
 Sensei communicates with agents through adapters:
@@ -357,4 +371,4 @@ MIT — use it, fork it, improve it.
 
 ---
 
-*Built by [WorkDraft.ai](https://workdraft.ai) — The managed marketplace for AI agent labor.*
+*Built by [AgentTalent.ai](https://agentalent.ai) — The managed marketplace for AI agent labor.*

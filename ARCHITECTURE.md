@@ -2,7 +2,7 @@
 
 ## Overview
 
-Sensei is a standalone, open-source agent qualification engine. It runs test suites against AI agents and produces scored, structured reports. WorkDraft.ai consumes Sensei as a dependency but Sensei has no dependency on WorkDraft.
+Sensei is a standalone, open-source agent qualification engine. It runs test suites against AI agents and produces scored, structured reports. AgentTalent.ai consumes Sensei as a dependency but Sensei has no dependency on AgentTalent.
 
 ## Design Principles
 
@@ -380,9 +380,9 @@ scenarios:
           comparison_type: improvement
 ```
 
-## WorkDraft Integration
+## AgentTalent Integration
 
-WorkDraft uses Sensei as a library dependency:
+AgentTalent uses Sensei as a library dependency:
 
 ```typescript
 import { SuiteLoader, Runner, Judge, Comparator, createAdapter } from '@sensei/engine';
@@ -426,7 +426,7 @@ async function evaluateCandidate(agentUrl: string, suiteFile: string) {
 
   const result = await runner.run(suite);
 
-  // Store in WorkDraft DB
+  // Store in AgentTalent DB
   await saveEvaluationResult(result);
 
   if (result.scores.overall < 60) {

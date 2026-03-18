@@ -4,7 +4,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    CALLER (WorkDraft, CI/CD, or CLI)                │
+│                    CALLER (AgentTalent, CI/CD, or CLI)                │
 │                                                                     │
 │  1. Load suite YAML:                                               │
 │     const suite = await loader.loadFile('./suites/sdr-qualification/suite.yaml')  │
@@ -120,7 +120,7 @@
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Integration Code (WorkDraft)
+## Integration Code (AgentTalent)
 
 ```typescript
 import { SuiteLoader, Runner, Judge, Comparator, createAdapter } from '@sensei/engine';
