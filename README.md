@@ -1,5 +1,9 @@
 # Sensei
 
+![CI](https://github.com/nymeria-ai/sensei/actions/workflows/ci.yml/badge.svg)
+[![npm](https://img.shields.io/npm/v/@sensei/engine)](https://www.npmjs.com/package/@sensei/engine)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Open-source AI agent qualification engine.**
 
 Test, evaluate, and certify AI agents across professional skills with standardized benchmarks, real-world scenarios, and measurable KPIs.
