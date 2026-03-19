@@ -31,7 +31,7 @@ The most impactful contribution. Create a new suite for a professional role:
 ## Development Setup
 
 ```bash
-git clone https://github.com/nymeria-ai/sensei.git
+git clone https://github.com/mondaycom/sensei.git
 cd sensei
 npm install
 npm run build
@@ -69,7 +69,7 @@ npx changeset
 
 This will prompt you to select which packages are affected, the semver bump type, and a summary of the change. The generated markdown file in `.changeset/` should be committed with your PR.
 
-When your PR is merged to `main`, the Release workflow will automatically open a "Version Packages" PR that bumps versions and updates changelogs. Merging that PR publishes to npm and creates GitHub Releases.
+Releases are triggered manually via the GitHub Actions `Release` workflow (`workflow_dispatch`). Select which packages to release and the bump type (patch/minor/major).
 
 ## Pull Request Process
 
