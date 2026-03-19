@@ -1,5 +1,5 @@
 {
-  "name": "@sensei/sdk",
+  "name": "@mondaycom/sensei-sdk",
   "version": "0.1.0",
   "description": "SDK for building Sensei evaluation suites programmatically",
   "main": "dist/index.js",
@@ -10,7 +10,7 @@
     "dev": "tsup src/index.ts --format esm,cjs --dts --watch"
   },
   "dependencies": {
-    "@sensei/engine": "*"
+    "@mondaycom/sensei-engine": "*"
   },
   "license": "MIT"
 }

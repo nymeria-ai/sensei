@@ -1,5 +1,5 @@
 {
-  "name": "@sensei/cli",
+  "name": "@mondaycom/sensei-cli",
   "version": "0.1.0",
   "description": "CLI for Sensei agent qualification engine",
   "type": "module",
@@ -11,7 +11,7 @@
     "dev": "tsup src/index.ts --format esm --dts --watch"
   },
   "dependencies": {
-    "@sensei/engine": "*",
+    "@mondaycom/sensei-engine": "*",
     "commander": "^13.0.0",
     "chalk": "^5.4.0",
     "ora": "^8.0.0",
