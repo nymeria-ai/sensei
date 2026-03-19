@@ -77,7 +77,7 @@ jobs:
         run: |
           if [[ "$RELEASE_ENGINE" == "true" ]]; then
             cd packages/engine
-            NEW_VERSION=$(npm version "$BUMP" --no-git-tag-version | sed 's/^v//')
+            NEW_VERSION=$(npm version "$BUMP" --no-git-tag-version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
             echo "engine_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
             echo "Engine bumped to ${NEW_VERSION}"
             cd ../..
@@ -85,7 +85,7 @@ jobs:
 
           if [[ "$RELEASE_SDK" == "true" ]]; then
             cd packages/sdk
-            NEW_VERSION=$(npm version "$BUMP" --no-git-tag-version | sed 's/^v//')
+            NEW_VERSION=$(npm version "$BUMP" --no-git-tag-version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
             echo "sdk_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
             echo "SDK bumped to ${NEW_VERSION}"
             cd ../..
@@ -93,7 +93,7 @@ jobs:
 
           if [[ "$RELEASE_CLI" == "true" ]]; then
             cd packages/cli
-            NEW_VERSION=$(npm version "$BUMP" --no-git-tag-version | sed 's/^v//')
+            NEW_VERSION=$(npm version "$BUMP" --no-git-tag-version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
             echo "cli_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
             echo "CLI bumped to ${NEW_VERSION}"
             cd ../..
